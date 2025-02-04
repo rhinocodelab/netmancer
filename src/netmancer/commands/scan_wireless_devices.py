@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 
 def configure_parser(subparsers):
-    parser = subparsers.add_parser('scan-wifi', help='Scan for wireless devices')
+    parser = subparsers.add_parser('scan-wifi', help='Scan available wireless devices')
     parser.add_argument(
         '--output', '-o',
         type=str,
