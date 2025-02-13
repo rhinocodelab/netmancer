@@ -47,6 +47,8 @@ def handle_ethernet(args):
 
     if args.dhcp:
         configure_dhcp(args.interface, args.dhcp)
+    elif args.static:
+        configure_static(args.interface, args.static)
 
 def configure_dhcp(interface, config_ini_path):
     """Configures an Ethernet interface with DHCP."""
@@ -94,7 +96,7 @@ def configure_dhcp(interface, config_ini_path):
             # Create DHCP netplan YAML
             dhcp_netplan_config.touch()
             dhcp_netplan_config.chmod(0o600)
-            log_message(f"INFO: Created {dhcp_netplan_config}.")
+            log_message(f"INFO: Created blank {dhcp_netplan_config}.")
         except Exception as e:
             log_message(f"ERROR: Failed to create {dhcp_netplan_config} - {e}")
             # Unlink config file
@@ -156,7 +158,99 @@ def configure_dhcp(interface, config_ini_path):
         if not apply_netplan(interface, 2, extra1):
             return False
         return True
+
+def configure_static(interface, config_ini_path):
+    """Configures an Ethernet interface with STATIC."""
+    dhcp_netplan_config = CONFIG_DIR / f"99-netmancer-{interface}-dhcp.yaml"
+    static_netplan_config = CONFIG_DIR / f"99-netmancer-{interface}-static.yaml"
     
+    # Remove DHCP yaml if available
+    if dhcp_netplan_config.exists():
+        try:
+            dhcp_netplan_config.unlink()
+            log_message(f"INFO: Removed {dhcp_netplan_config}.")
+        except Exception as e:
+            log_message(f"ERROR: Failed to remove {dhcp_netplan_config} - {e}")
+            return False
+
+    # Remove STATIC yaml if available
+    if static_netplan_config.exists():
+        try:
+            static_netplan_config.unlink()
+            log_message(f"INFO: Removed {static_netplan_config}.")
+        except Exception as e:
+            log_message(f"ERROR: Failed to remove {static_netplan_config} - {e}")
+            return False
+        
+    # Parse INI file
+    config = configparser.ConfigParser()
+    config.read(config_ini_path)
+    
+    if "Ethernet" not in config:
+        log_message(f"ERROR: 'Ethernet' section not found in {config_ini_path}.")
+        # Unlink config file
+        unlink_config_file_ini()
+        return False
+    
+    # Get PrimaryDNS, SecondaryDNS, PrimwaryWINS and SecondaryWINS values
+    primary_dns = config.get("Ethernet", "PrimaryDNS")
+    secondary_dns = config.get("Ethernet", "SecondaryDNS")
+    primary_wins = config.get("Ethernet", "PrimaryWINS")
+    secondary_wins = config.get("Ethernet", "SecondaryWINS")
+
+    # Create STATIC netplan yaml
+    try:
+        # Create STATIC netplan yaml
+        static_netplan_config.touch()
+        static_netplan_config.chmod(0o600)
+        log_message(f"INFO: Created blank {static_netplan_config}.")
+    except Exception as e:
+        log_message(f"ERROR: Failed to create {static_netplan_config} - {e}")
+        # Unlink config file
+        unlink_config_file_ini()
+        return False
+
+    # Create STATIC netplan yaml content
+    static_yaml_content = {
+        "network": {
+            "version": 2,
+            "renderer": "NetworkManager",
+            "ethernets": {
+                interface: {
+                    "dhcp4": False,
+                    "optional": True,
+                    "addresses": [ f'{config.get("Ethernet", "IP")}/{subnet_mask_to_cidr(config.get("Ethernet", "SubnetMask"))}' ],
+                    "routes": [{
+                        "to": "default",
+                        "via": config.get("Ethernet", "Gateway")
+                    }],
+                    "nameservers": {
+                        "addresses": [primary_dns]
+                    }
+                }
+            }
+        }
+    }
+    # Add SecondaryDNS to the YAML content if it is not 'NA'
+    if secondary_dns != 'NA':
+        static_yaml_content["network"]["ethernets"][interface]["nameservers"]["addresses"].append(secondary_dns)
+    # Add PrimaryWINS to the YAML content if it is not 'NA'
+    if primary_wins != 'NA':
+        static_yaml_content["network"]["ethernets"][interface]["nameservers"]["addresses"].append(primary_wins)
+    # Add SecondaryWINS to the YAML content if it is not 'NA'
+    if secondary_wins != 'NA':
+        static_yaml_content["network"]["ethernets"][interface]["nameservers"]["addresses"].append(secondary_wins)
+
+    # Write STATIC netplan yaml content
+    with static_netplan_config.open("w") as f:
+        yaml.dump(static_yaml_content, f, default_flow_style=False)
+        log_message(f"INFO: Wrote STATIC netplan YAML to {static_netplan_config}.")
+
+    # Apply NETPLAN
+    if not apply_netplan(interface, 1, 0):
+        return False
+    return True
+
 def apply_netplan(interface, networkmode, extra1):
     """Apply NETPLAN YAML"""
     try:
@@ -245,3 +339,12 @@ def unlink_config_file_ini():
             log_message(f"ERROR: Failed to unlink {config_file_ini} - {e}")
             return False
     return True
+
+def subnet_mask_to_cidr(mask):
+    """Convert subnet mask to CIDR prefix length."""
+    try:
+        # Split the mask into octets and count the bits set to 1
+        return sum(bin(int(octet)).count('1') for octet in mask.split('.'))
+    except ValueError:
+        print("Invalid subnet mask format.")
+        return None
