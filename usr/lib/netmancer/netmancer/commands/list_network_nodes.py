@@ -35,10 +35,10 @@ def save_output(output_path_str, data):
         output_path.write_text(json.dumps(data, indent=4))
         print(f"Output saved to {output_path.resolve()}")
     except PermissionError:
-        print("Error: Insufficient permissions to save the file.")
+        print("ERROR: Insufficient permissions to save the file.")
         raise SystemExit(1)
     except Exception as e:
-        print(f"Error saving file: {str(e)}")
+        print(f"ERROR: An error occurred while saving file: {str(e)}")
         raise SystemExit(1)
 
 

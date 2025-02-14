@@ -17,7 +17,7 @@ def log_message(message):
         with LOG_FILE.open("a") as log_file:
             log_file.write(log_entry)
     except Exception as e:
-        print(f"Error writing to log file: {e}")
+        print(f"ERROR: Writing to log file: {e}")
 
 def configure_parser(subparsers):
     """Configures the command-line argument parser for Ethernet settings."""
@@ -48,7 +48,7 @@ def configure_parser(subparsers):
 def handle_ethernet(args):
     """Handles Ethernet configuration based on user input."""
     if not (args.dhcp or args.static or args.disable):
-        log_message("Error: Missing network configuration argument --dhcp or --static or --disable.")
+        log_message("ERROR: Missing network configuration argument --dhcp or --static or --disable.")
         return False
 
     if args.dhcp:
@@ -281,23 +281,19 @@ def configure_static(interface, config_ini_path):
                         "to": "default",
                         "via": config.get("Ethernet", "Gateway")
                     }],
-                    "nameservers": {
-                        "addresses": [primary_dns]
-                    }
                 }
             }
         }
     }
-    # Add SecondaryDNS to the YAML content if it is not 'NA'
-    if secondary_dns != 'NA':
-        static_yaml_content["network"]["ethernets"][interface]["nameservers"]["addresses"].append(secondary_dns)
-    # Add PrimaryWINS to the YAML content if it is not 'NA'
-    if primary_wins != 'NA':
-        static_yaml_content["network"]["ethernets"][interface]["nameservers"]["addresses"].append(primary_wins)
-    # Add SecondaryWINS to the YAML content if it is not 'NA'
-    if secondary_wins != 'NA':
-        static_yaml_content["network"]["ethernets"][interface]["nameservers"]["addresses"].append(secondary_wins)
 
+    nameservers = []
+    if primary_dns != 'NA':
+        nameservers.append(primary_dns)
+    if secondary_dns != 'NA':
+        nameservers.append(secondary_dns)
+    if nameservers:
+        static_yaml_content["network"]["ethernets"][interface]["nameservers"] = {"addresses": nameservers}
+    
     # Write STATIC netplan yaml content
     with static_netplan_config.open("w") as f:
         yaml.dump(static_yaml_content, f, default_flow_style=False)
@@ -360,27 +356,26 @@ def update_db(interface, networkmode, extra1):
             """)
             conn.commit()
             log_message("INFO: NetworkDetails table created successfully")
-        
-            # Update the 'NetworkDetails' table
+
+        # Update the 'NetworkDetails' table
+        cursor.execute("""
+            UPDATE NetworkDetails
+            SET NetworkMode = ?, Extra1 = ?
+            WHERE NetworkType = ?
+        """, (networkmode, extra1, interface))
+
+        if cursor.rowcount == 0:
+            log_message("INFO: Entry not found. Inserting new record...")
             cursor.execute("""
-                UPDATE NetworkDetails 
-                SET NetworkMode = ?, LinkMode = ?, WakeOn = ?, Extra1 = ?
-                WHERE NetworkType = ?
-            """,(networkmode,'Auto select' 'g', extra1,interface))
-            conn.commit()
-        else:
-            # Update the 'NetworkDeatils' table
-            cursor.execute("""
-                UPDATE NetworkDetails
-                SET NetworkMode = ?, Extra1 = ?
-                WHERE NetworkType = ?
-            """,(networkmode, extra1, interface))
-            conn.commit()
-        conn.close()
+                INSERT INTO NetworkDetails (NetworkMode, NetworkType, Extra1)
+                VALUES (?, ?, ?)
+            """, (networkmode, interface, extra1))
+
+        conn.commit()
         log_message("INFO: NetworkDetails table updated successfully.")
         return True
     except Exception as e:
-        log_message(f"Error: Updating NetworkDetails table: {e}")
+        log_message(f"ERROR: Updating NetworkDetails table: {e}")
         return False
     finally:
         conn.close()
@@ -403,5 +398,5 @@ def subnet_mask_to_cidr(mask):
         # Split the mask into octets and count the bits set to 1
         return sum(bin(int(octet)).count('1') for octet in mask.split('.'))
     except ValueError:
-        print("Invalid subnet mask format.")
+        print("ERROR: Invalid subnet mask format.")
         return None

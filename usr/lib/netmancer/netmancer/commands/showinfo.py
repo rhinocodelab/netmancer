@@ -104,12 +104,11 @@ def get_interface_details(interface):
                 else:
                     details['Type'] = "Unknown"
         details['Interface'] = interface
+        log_message(f"INFO: Getting interface details successfully.")
         return details
     except Exception as e:
-        log_message(f"Error: Getting interface details: {e}")
+        log_message(f"ERROR: Getting interface details: {e}")
         return {}
-
-
 
 def cidr_to_subnet(cidr):
     """Convert CIDR prefix length to subnet mask."""
