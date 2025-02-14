@@ -62,6 +62,22 @@ def get_interface_details(interface):
                 details['Gateway'] = value
             elif "IP4.DNS" in key:
                 details.setdefault('Nameserver', []).append(value)
+            
+            # Get speed and duplex and wake-on using ethtool
+            try:
+                ethtool_output = subprocess.run(["ethtool", interface], capture_output=True, text=True, check=True).stdout
+                for line in ethtool_output.split("\n"):
+                    if "Speed" in line:
+                        details['Speed'] = line.split(":")[1].strip()
+                    elif "Duplex" in line:
+                        details['Duplex'] = line.split(":")[1].strip()
+                    elif "Wake-on" in line:
+                        details['Wake-on'] = line.split(":")[1].strip()
+            except subprocess.CalledProcessError:
+                log_message(f"Error: Getting ethtool details: {e}")
+                details['Speed'] = "NA"
+                details['Duplex'] = "NA"
+                details['Wake-on'] = "NA"
         details['Interface'] = interface
         return details
     except Exception as e:

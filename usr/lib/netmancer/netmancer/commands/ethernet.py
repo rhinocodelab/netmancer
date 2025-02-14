@@ -37,18 +37,75 @@ def configure_parser(subparsers):
         metavar="CONFIG_FILE",
         help='Configure static IP. Provide the path to the INI configuration file.'
     )
+    parser.add_argument(
+        '--disable', '-x',
+        action='store_true',
+        help='Disable the Ethernet interface.'
+    )
+
     parser.set_defaults(func=handle_ethernet)
 
 def handle_ethernet(args):
     """Handles Ethernet configuration based on user input."""
-    if not (args.dhcp or args.static):
-        log_message("Error: Missing network configuration argument --dhcp or --static.")
+    if not (args.dhcp or args.static or args.disable):
+        log_message("Error: Missing network configuration argument --dhcp or --static or --disable.")
         return False
 
     if args.dhcp:
         configure_dhcp(args.interface, args.dhcp)
     elif args.static:
         configure_static(args.interface, args.static)
+    elif args.disable:
+        disable_ethernet(args.interface)
+    else:
+        log_message("Error: Invalid network configuration argument.")
+        return False
+
+def disable_ethernet(interface):
+    """Disables an Ethernet interface."""
+    dhcp_netplan_config = CONFIG_DIR / f"99-netmancer-{interface}-dhcp.yaml"
+    static_netplan_config = CONFIG_DIR / f"99-netmancer-{interface}-static.yaml"
+
+    # Check if the interface exists in the system
+    try:
+        subprocess.run(['ip', 'link', 'show', interface], check=True, capture_output=True)
+    except subprocess.CalledProcessError:
+        log_message(f"ERROR: Interface {interface} does not exist.")
+        return False
+
+    # Check if the interface is already down
+    try:
+        subprocess.run(['ip', 'link', 'show', interface], check=True, capture_output=True)
+        output = subprocess.run(['ip', 'link', 'show', interface], check=True, capture_output=True).stdout.decode().strip()
+        if "state DOWN" in output:
+            log_message(f"INFO: Interface {interface} is already down.")
+            return True
+    except subprocess.CalledProcessError:
+        log_message(f"ERROR: Interface {interface} does not exist.")
+        return False
+
+    # Bring the interface down
+    try:
+        subprocess.run(['ip', 'link', 'set', interface, 'down'], check=True)
+        log_message(f"INFO: Interface {interface} is down.")
+        # Remove DHCP netplan YAML if it exists
+        if dhcp_netplan_config.exists():
+            try:
+                dhcp_netplan_config.unlink()
+                log_message(f"INFO: Removed {dhcp_netplan_config}.")
+            except Exception as e:
+                log_message(f"ERROR: Failed to remove {dhcp_netplan_config} - {e}")
+        # Remove static netplan YAML if it exists
+        if static_netplan_config.exists():
+            try:
+                static_netplan_config.unlink()
+                log_message(f"INFO: Removed {static_netplan_config}.")
+            except Exception as e:
+                log_message(f"ERROR: Failed to remove {static_netplan_config} - {e}")
+        return True
+    except subprocess.CalledProcessError as e:
+        log_message(f"ERROR: Failed to bring {interface} down - {e}")
+        return False
 
 def configure_dhcp(interface, config_ini_path):
     """Configures an Ethernet interface with DHCP."""
