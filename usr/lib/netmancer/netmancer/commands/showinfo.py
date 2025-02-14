@@ -2,6 +2,7 @@ import subprocess
 from pathlib import Path
 from datetime import datetime
 import json
+import re
 
 CONFIG_DIR = Path("/etc/netplan")
 SYSCONF_DB = '/data/sysconf.db'
@@ -43,7 +44,7 @@ def get_interface_details(interface):
     """
     try:
         """Get network interface details using nmcli."""
-        result = subprocess.run(["nmcli", "--terse", "--fields", "IP4.ADDRESS,IP4.GATEWAY,IP4.DNS,GENERAL.STATE", "device", "show", interface],
+        result = subprocess.run(["nmcli", "--terse", "--fields", "IP4.ADDRESS,IP4.GATEWAY,IP4.DNS,GENERAL.STATE,GENERAL.TYPE", "device", "show", interface],
                                 capture_output=True, text=True, check=True)
         lines = result.stdout.strip().split("\n")
 
@@ -63,21 +64,45 @@ def get_interface_details(interface):
             elif "IP4.DNS" in key:
                 details.setdefault('Nameserver', []).append(value)
             
-            # Get speed and duplex and wake-on using ethtool
-            try:
-                ethtool_output = subprocess.run(["ethtool", interface], capture_output=True, text=True, check=True).stdout
-                for line in ethtool_output.split("\n"):
-                    if "Speed" in line:
-                        details['Speed'] = line.split(":")[1].strip()
-                    elif "Duplex" in line:
-                        details['Duplex'] = line.split(":")[1].strip()
-                    elif "Wake-on" in line:
-                        details['Wake-on'] = line.split(":")[1].strip()
-            except subprocess.CalledProcessError:
-                log_message(f"Error: Getting ethtool details: {e}")
-                details['Speed'] = "NA"
-                details['Duplex'] = "NA"
-                details['Wake-on'] = "NA"
+            # Switch case for GENERAL.TYPE
+            if key == "GENERAL.TYPE":
+                if "ethernet" in value:
+                    details['Type'] = "Ethernet"
+                    # Get speed and duplex and wake-on using ethtool
+                    try:
+                        ethtool_output = subprocess.run(["ethtool", interface], capture_output=True, text=True, check=True).stdout
+                        for line in ethtool_output.split("\n"):
+                            if "Speed" in line:
+                                details['Speed'] = line.split(":")[1].strip()
+                            elif "Duplex" in line:
+                                details['Duplex'] = line.split(":")[1].strip()
+                            elif "Wake-on" in line:
+                                details['Wake-on'] = line.split(":")[1].strip()
+                    except subprocess.CalledProcessError:
+                        log_message(f"Error: Getting ethtool details: {e}")
+                        details['Speed'] = "NA"
+                        details['Duplex'] = "NA"
+                        details['Wake-on'] = "NA"
+                elif "wifi" in value:
+                    details['Type'] = "Wireless"
+                    # Get 'Frequency', 'Bit Rate', 'Tx-Power', 'Link Quality' and 'Signal level'
+                    try:
+                        iw_output = subprocess.run(["iwconfig", interface], capture_output=True, text=True)
+                        output = iw_output.stdout
+                        freq = re.search(r'Frequency:([\d.]+ GHz)', output)
+                        bit_rate = re.search(r'Bit Rate=([\d.]+ Mb/s)', output)
+                        tx_power = re.search(r'Tx-Power=([\d]+ dBm)', output)
+                        signal_level = re.search(r'Signal level=([-\d]+ dBm)', output)
+                        link_quality = re.search(r'Link Quality=([\d/]+)', output)
+                        details['Frequency'] = freq.group(1).strip() if freq else "NA"
+                        details['Bit Rate'] = bit_rate.group(1).strip() if bit_rate else "NA"
+                        details['Tx-Power'] = tx_power.group(1).strip() if tx_power else "NA"
+                        details['Link Quality'] = link_quality.group(1).strip() if link_quality else "NA"
+                        details['Signal level'] = signal_level.group(1).strip() if signal_level else "NA"    
+                    except subprocess.CalledProcessError:
+                        log_message(f"Error: Getting iw details: {e}")
+                else:
+                    details['Type'] = "Unknown"
         details['Interface'] = interface
         return details
     except Exception as e:
