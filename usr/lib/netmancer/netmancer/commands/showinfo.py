@@ -44,14 +44,13 @@ def get_interface_details(interface):
     """
     try:
         """Get network interface details using nmcli."""
-        result = subprocess.run(["nmcli", "--terse", "--fields", "IP4.ADDRESS,IP4.GATEWAY,IP4.DNS,GENERAL.STATE,GENERAL.TYPE", "device", "show", interface],
+        result = subprocess.run(["nmcli", "--terse", "--fields", "IP4.ADDRESS,IP4.GATEWAY,IP4.DNS,IP4.DOMAIN,GENERAL.STATE,GENERAL.TYPE", "device", "show", interface],
                                 capture_output=True, text=True, check=True)
         lines = result.stdout.strip().split("\n")
 
         if not any("connected" in line for line in lines):
             log_message(f"ERROR: Interface {interface} is not connected.")
             return {}
-
         details = {}
         for line in lines:
             key, value = line.split(":", 1)
@@ -63,6 +62,8 @@ def get_interface_details(interface):
                 details['Gateway'] = value
             elif "IP4.DNS" in key:
                 details.setdefault('Nameserver', []).append(value)
+            elif "IP4.DOMAIN" in key:
+                details['Domain'] = value
             
             # Switch case for GENERAL.TYPE
             if key == "GENERAL.TYPE":

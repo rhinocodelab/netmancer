@@ -4,6 +4,7 @@ import configparser
 from pathlib import Path
 from datetime import datetime
 import sqlite3
+import os
 
 CONFIG_DIR = Path("/etc/netplan")
 SYSCONF_DB = '/data/sysconf.db'
@@ -52,10 +53,13 @@ def handle_ethernet(args):
         return False
 
     if args.dhcp:
+        log_message(f"INFO: Configuring DHCP for {args.interface}.")
         configure_dhcp(args.interface, args.dhcp)
     elif args.static:
+        log_message(f"INFO: Configuring static IP for {args.interface}.")
         configure_static(args.interface, args.static)
     elif args.disable:
+        log_message(f"INFO: Disabling {args.interface}.")
         disable_ethernet(args.interface)
     else:
         log_message("Error: Invalid network configuration argument.")
@@ -66,51 +70,50 @@ def disable_ethernet(interface):
     dhcp_netplan_config = CONFIG_DIR / f"99-netmancer-{interface}-dhcp.yaml"
     static_netplan_config = CONFIG_DIR / f"99-netmancer-{interface}-static.yaml"
 
-    # Check if the interface exists in the system
-    try:
-        subprocess.run(['ip', 'link', 'show', interface], check=True, capture_output=True)
-    except subprocess.CalledProcessError:
-        log_message(f"ERROR: Interface {interface} does not exist.")
-        return False
+    # Remove DHCP and static Netplan YAML if they exist
+    if dhcp_netplan_config.exists():
+        try:
+            dhcp_netplan_config.unlink()
+            log_message(f"INFO: Removed {dhcp_netplan_config}.")
+        except Exception as e:
+            log_message(f"ERROR: Failed to remove {dhcp_netplan_config} - {e}")
 
-    # Check if the interface is already down
+    # Remove static Netplan YAML if they exist
+    if static_netplan_config.exists():
+        try:
+            static_netplan_config.unlink()
+            log_message(f"INFO: Removed {static_netplan_config}.")
+        except Exception as e:
+            log_message(f"ERROR: Failed to remove {static_netplan_config} - {e}")
+    
+    # Bring down the interface
     try:
-        subprocess.run(['ip', 'link', 'show', interface], check=True, capture_output=True)
-        output = subprocess.run(['ip', 'link', 'show', interface], check=True, capture_output=True).stdout.decode().strip()
-        if "state DOWN" in output:
-            log_message(f"INFO: Interface {interface} is already down.")
-            return True
-    except subprocess.CalledProcessError:
-        log_message(f"ERROR: Interface {interface} does not exist.")
-        return False
-
-    # Bring the interface down
-    try:
-        subprocess.run(['ip', 'link', 'set', interface, 'down'], check=True)
+        subprocess.run(['ip', 'link', 'set', 'dev', interface, 'down'], check=True)
         log_message(f"INFO: Interface {interface} is down.")
-        # Remove DHCP netplan YAML if it exists
-        if dhcp_netplan_config.exists():
-            try:
-                dhcp_netplan_config.unlink()
-                log_message(f"INFO: Removed {dhcp_netplan_config}.")
-            except Exception as e:
-                log_message(f"ERROR: Failed to remove {dhcp_netplan_config} - {e}")
-        # Remove static netplan YAML if it exists
-        if static_netplan_config.exists():
-            try:
-                static_netplan_config.unlink()
-                log_message(f"INFO: Removed {static_netplan_config}.")
-            except Exception as e:
-                log_message(f"ERROR: Failed to remove {static_netplan_config} - {e}")
-        return True
-    except subprocess.CalledProcessError as e:
-        log_message(f"ERROR: Failed to bring {interface} down - {e}")
+    except subprocess.CalledProcessError:
+        log_message(f"ERROR: Failed to bring down interface {interface}.")
         return False
+    return True
 
 def configure_dhcp(interface, config_ini_path):
     """Configures an Ethernet interface with DHCP."""
     dhcp_netplan_config = CONFIG_DIR / f"99-netmancer-{interface}-dhcp.yaml"
     static_netplan_config = CONFIG_DIR / f"99-netmancer-{interface}-static.yaml"
+
+    # Check if the interface is connected
+    try:
+        subprocess.run(['ip', 'link', 'show', interface], check=True, capture_output=True)
+        output = subprocess.run(['ip', 'link', 'show', interface], check=True, capture_output=True).stdout.decode().strip()
+        if "state DOWN" in output:
+            log_message(f"ERROR: Interface {interface} is not connected.")
+            # Unlink config file
+            unlink_config_file_ini()
+            return False
+    except subprocess.CalledProcessError:
+        log_message(f"ERROR: Interface {interface} does not exist.")
+        # Unlink config file
+        unlink_config_file_ini()
+        return False
 
     # Remove static Netplan YAML if it exists
     if static_netplan_config.exists():
@@ -159,7 +162,7 @@ def configure_dhcp(interface, config_ini_path):
             # Unlink config file
             unlink_config_file_ini()
             return False
-        
+
         # Create DHCP netplan YAML content
         dhcp_yaml_content = {
             "network": {
@@ -185,11 +188,6 @@ def configure_dhcp(interface, config_ini_path):
         with dhcp_netplan_config.open("w") as f:
             yaml.dump(dhcp_yaml_content, f, default_flow_style=False)
             log_message(f"INFO: Wrote DHCP netplan YAML to {dhcp_netplan_config}.")
-        
-        # Apply NETPLAN
-        if not apply_netplan(interface, 2, extra1):
-            return False
-        return True
     else:
         log_message(f"INFO: {dhcp_netplan_config} already exists.")
         # If PrimaryDNS or SecondaryDNS is available then update the dhcp_yaml_content
@@ -211,10 +209,11 @@ def configure_dhcp(interface, config_ini_path):
                 # Unlink config file
                 unlink_config_file_ini()
                 return False
-        # Apply NETPLAN
-        if not apply_netplan(interface, 2, extra1):
-            return False
-        return True
+        
+    # Apply NETPLAN
+    if not apply_netplan(interface, 2, extra1):
+        return False
+    return True
 
 def configure_static(interface, config_ini_path):
     """Configures an Ethernet interface with STATIC."""
@@ -313,6 +312,9 @@ def apply_netplan(interface, networkmode, extra1):
             # Unlink config file
             unlink_config_file_ini()
             return False
+        # Restart NetworkManager
+        subprocess.run(["systemctl", "restart", "NetworkManager"], check=True)
+        log_message("INFO: NetworkManager restarted successfully.")
         # Unlink config file
         unlink_config_file_ini()
         return True
