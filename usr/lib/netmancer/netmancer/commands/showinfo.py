@@ -4,8 +4,7 @@ from datetime import datetime
 import json
 import re
 
-CONFIG_DIR = Path("/etc/netplan")
-SYSCONF_DB = '/data/sysconf.db'
+
 LOG_FILE = Path("/var/log/netmancer.log")
 
 def log_message(message):

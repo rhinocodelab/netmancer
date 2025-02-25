@@ -38,18 +38,59 @@ def configure_parser(subparsers):
         metavar="CONFIG_FILE",
         help='Configure static IP. Provide the path to the INI configuration file.'
     )
+    parser.add_argument(
+        '--disable', '-x',
+        action='store_true',
+        help='Disable the Ethernet interface.'
+    )
 
     parser.set_defaults(func=handle_wireless)
 
 def handle_wireless(args):
     """Handles Wireless configuration based on user input."""
     if args.dhcp:
+        log_message(f"INFO: Configuring DHCP for {args.interface}.")
         configure_dhcp(args.interface, args.dhcp)
     elif args.static:
+        log_message(f"INFO: Configuring static IP for {args.interface}.")
         configure_static(args.interface, args.static)
+    elif args.disable:
+        log_message(f"INFO: Disabling {args.interface}.")
+        disable_wireless(args.interface)
     else:
         log_message("Error: Invalid network configuration argument.")
         return False
+
+
+def disable_wireless(interface):
+    """Disables a Wireless interface."""
+    dhcp_netplan_config = CONFIG_DIR / f"100-netmancer-{interface}-dhcp.yaml"
+    static_netplan_config = CONFIG_DIR / f"100-netmancer-{interface}-static.yaml"
+
+    # Remove DHCP and static Netplan YAML if they exist
+    if dhcp_netplan_config.exists():
+        try:
+            dhcp_netplan_config.unlink()
+            log_message(f"INFO: Removed {dhcp_netplan_config}.")
+        except Exception as e:
+            log_message(f"ERROR: Failed to remove {dhcp_netplan_config} - {e}")
+
+    if static_netplan_config.exists():
+        try:
+            static_netplan_config.unlink()
+            log_message(f"INFO: Removed {static_netplan_config}.")
+        except Exception as e:
+            log_message(f"ERROR: Failed to remove {static_netplan_config} - {e}")
+
+    # Bring down the interface
+    try:
+        subprocess.run(['nmcli', 'radio', 'wifi', 'off'], check=True)
+        log_message(f"INFO: Interface {interface} is down.")
+    except subprocess.CalledProcessError:
+        log_message(f"ERROR: Failed to bring down interface {interface}.")
+        return False
+    return True
+
 
 def configure_dhcp(interface, config_ini_path):
     """Configure an Wireless interface with DHCP"""
@@ -234,8 +275,6 @@ def configure_static(interface, config_ini_path):
     if not apply_netplan():
         return False
     return True
-
-
 
 def apply_netplan():
     """Apply NETPLAN YAML"""

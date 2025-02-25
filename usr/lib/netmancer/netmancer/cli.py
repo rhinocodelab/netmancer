@@ -9,11 +9,15 @@ def main():
     from netmancer.commands.ethernet import configure_parser as ethernet_parser
     from netmancer.commands.showinfo import configure_parser as showinfo_parser
     from netmancer.commands.wireless import configure_parser as wireless_parser
+    from netmancer.commands.status import configure_parser as status_parser
+    from netmancer.commands.dhcpinfo import configure_parser as dhcpinfo_parser
 
     list_network_nodes_parser(subparsers)
     ethernet_parser(subparsers)
     showinfo_parser(subparsers)
     wireless_parser(subparsers)
+    status_parser(subparsers)
+    dhcpinfo_parser(subparsers)
     
     args = parser.parse_args()
     if hasattr(args, 'func'):
