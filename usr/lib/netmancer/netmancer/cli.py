@@ -11,6 +11,8 @@ def main():
     from netmancer.commands.wireless import configure_parser as wireless_parser
     from netmancer.commands.status import configure_parser as status_parser
     from netmancer.commands.dhcpinfo import configure_parser as dhcpinfo_parser
+    from netmancer.commands.dns import configure_parser as dns_parser
+    from netmancer.commands.dns_suffix import configure_parser as dns_suffix_parser
 
     list_network_nodes_parser(subparsers)
     ethernet_parser(subparsers)
@@ -18,6 +20,8 @@ def main():
     wireless_parser(subparsers)
     status_parser(subparsers)
     dhcpinfo_parser(subparsers)
+    dns_parser(subparsers)
+    dns_suffix_parser(subparsers)           
     
     args = parser.parse_args()
     if hasattr(args, 'func'):
