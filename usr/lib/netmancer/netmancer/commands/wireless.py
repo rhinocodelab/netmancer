@@ -8,6 +8,7 @@ from datetime import datetime
 CONFIG_DIR = Path("/etc/netplan")
 SYSCONF_DB = '/data/sysconf.db'
 LOG_FILE = Path("/var/log/netmancer.log")
+CONFIG_INI_PATH = Path("/tmp/wireless.ini")
 
 def log_message(message):
     """Write logs to /var/log/netmancer.log."""
@@ -43,6 +44,12 @@ def configure_parser(subparsers):
         action='store_true',
         help='Disable the Ethernet interface.'
     )
+    parser.add_argument(
+        '--access-point', '-a',
+        nargs=2,
+        metavar=('ACTION', 'SSID'),
+        help='Enable or disable a specific access point. ACTION is "enable" or "disable", SSID is the access point name (e.g., "MyWiFi").'
+    )
 
     parser.set_defaults(func=handle_wireless)
 
@@ -50,15 +57,19 @@ def handle_wireless(args):
     """Handles Wireless configuration based on user input."""
     if args.dhcp:
         log_message(f"INFO: Configuring DHCP for {args.interface}.")
-        configure_dhcp(args.interface, args.dhcp)
+        configure_dhcp(args.interface)
     elif args.static:
         log_message(f"INFO: Configuring static IP for {args.interface}.")
-        configure_static(args.interface, args.static)
+        configure_static(args.interface)
     elif args.disable:
         log_message(f"INFO: Disabling {args.interface}.")
         disable_wireless(args.interface)
+    elif args.access_point:
+        action, ssid = args.access_point
+        log_message(f"INFO: {'Enabling' if action == 'enable' else 'Disabling'} access point '{ssid}' for {args.interface}.")
+        manage_access_point(args.interface, ssid, action)
     else:
-        log_message("Error: Invalid network configuration argument.")
+        log_message("ERROR: Invalid network configuration argument.")
         return False
 
 
@@ -92,12 +103,12 @@ def disable_wireless(interface):
     return True
 
 
-def configure_dhcp(interface, config_ini_path):
-    """Configure an Wireless interface with DHCP"""
+def configure_dhcp(interface):
+    """Configure a Wireless interface with DHCP using /tmp/wireless.ini"""
     dhcp_netplan_config = CONFIG_DIR / f"100-netmancer-{interface}-dhcp.yaml"
     static_netplan_config = CONFIG_DIR / f"100-netmancer-{interface}-static.yaml"
 
-    # Remove static Netplan YAML if it exists
+    # Remove STATIC Netplan YAML if it exists
     if static_netplan_config.exists():
         try:
             static_netplan_config.unlink()
@@ -105,13 +116,16 @@ def configure_dhcp(interface, config_ini_path):
         except Exception as e:
             log_message(f"ERROR: Failed to remove {static_netplan_config} - {e}")
     
+    if not CONFIG_INI_PATH.exists():
+        log_message(f"INFO: Configuration file {CONFIG_INI_PATH} not found.")
+        return False
+    
     # Parse INI file
     config = configparser.ConfigParser()
-    config.read(config_ini_path)
+    config.read(CONFIG_INI_PATH)
 
     if "Wireless" not in config:
-        log_message(f"ERROR: 'Wireless' section not found in {config_ini_path}.")
-        # Unlink config file
+        log_message(f"ERROR: 'Wireless' section not found in {CONFIG_INI_PATH}.")
         unlink_config_file_ini()
         return False
 
@@ -121,7 +135,9 @@ def configure_dhcp(interface, config_ini_path):
         ssid = <ssid>
         password = <password>
     """
-    
+    ssid = config.get("Wireless", "ssid")
+    password = config.get("Wireless", "password")
+
     # Create DHCP netplan YAML if not available
     if not dhcp_netplan_config.exists():
         try:
@@ -146,8 +162,8 @@ def configure_dhcp(interface, config_ini_path):
                             "dhcp4": True,
                             "optional": True,
                             "access-points": {
-                                config.get("Wireless", "ssid"): {
-                                    "password": config.get("Wireless", "password")
+                                ssid: {
+                                    "password": password
                                 }
                             }
                         }
@@ -159,32 +175,48 @@ def configure_dhcp(interface, config_ini_path):
         with dhcp_netplan_config.open("w") as f:
             yaml.dump(dhcp_yaml_content, f, default_flow_style=False)
             log_message(f"INFO: Wrote DHCP netplan YAML to {dhcp_netplan_config}.")
-        
-        # Apply NETPLAN
-        if not apply_netplan():
-            return False
-        return True
     else:
-        log_message(f"INFO: {dhcp_netplan_config} already exists.")
-        # Check if ssid or password is updated
+        # YAML exists; check and update access-points
+        log_message(f"INFO: {dhcp_netplan_config} already exists, checking SSID.")
+
         with dhcp_netplan_config.open("r") as f:
             dhcp_yaml_content = yaml.safe_load(f)
-            if dhcp_yaml_content["network"]["wifis"][interface]["access-points"][config.get("Wireless", "ssid")]["password"] != config.get("Wireless", "password"):
-                # Update the YAML content
-                dhcp_yaml_content["network"]["wifis"][interface]["access-points"][config.get("Wireless", "ssid")]["password"] = config.get("Wireless", "password")
-                # Write updated YAML content
+        
+        # Ensure the structure exists
+        if "network" not in dhcp_yaml_content or "wifis" not in dhcp_yaml_content["network"] or interface not in dhcp_yaml_content["network"]["wifis"]:
+            log_message(f"ERROR: Invalid YAML structure in {dhcp_netplan_config}.")
+            unlink_config_file_ini()
+            return False
+        
+        # Get the Access-Points
+        access_points = dhcp_yaml_content["network"]["wifis"][interface].get("access-points", {})
+
+        if ssid not in access_points:
+            # Add new SSID if not present
+            access_points[ssid] = {"password": password}
+            log_message(f"INFO: Added new SSID {ssid} to access-points in {dhcp_netplan_config}.")
+            # Write the updated YAML
+            with dhcp_netplan_config.open("w") as f:
+                yaml.dump(dhcp_yaml_content, f, default_flow_style=False)
+                log_message(f"INFO: Updated DHCP netplan YAML in {dhcp_netplan_config}.")
+        else:
+            # SSID exists; check and update password
+            if access_points[ssid].get("password") != password:
+                access_points[ssid]["password"] = password
+                log_message(f"INFO: Updated password for SSID {ssid} in {dhcp_netplan_config}.")
+                # Write the updated YAML
                 with dhcp_netplan_config.open("w") as f:
                     yaml.dump(dhcp_yaml_content, f, default_flow_style=False)
                     log_message(f"INFO: Updated DHCP netplan YAML in {dhcp_netplan_config}.")
             else:
-                log_message(f"INFO: No changes detected in {dhcp_netplan_config}.")
-        # Apply NETPLAN
-        if not apply_netplan():
-            return False
-        return True
+                log_message(f"INFO: SSID {ssid} and password already exist in {dhcp_netplan_config}.")
+    # Apply NETPLAN
+    if not apply_netplan():
+        return False
+    return True
 
-def configure_static(interface, config_ini_path):
-    """Configure an Wireless interface with STATIC"""
+def configure_static(interface):
+    """Configure a Wireless interface with STATIC using /tmp/wireless.ini"""
     dhcp_netplan_config = CONFIG_DIR / f"100-netmancer-{interface}-dhcp.yaml"
     static_netplan_config = CONFIG_DIR / f"100-netmancer-{interface}-static.yaml"
 
@@ -197,84 +229,162 @@ def configure_static(interface, config_ini_path):
             log_message(f"ERROR: Failed to remove {dhcp_netplan_config} - {e}")
             return False
 
-    # Remove STATIC yaml if available
-    if static_netplan_config.exists():
-        try:
-            static_netplan_config.unlink()
-            log_message(f"INFO: Removed {static_netplan_config}.")
-        except Exception as e:
-            log_message(f"ERROR: Failed to remove {static_netplan_config} - {e}")
-            return False
-        
+    if not CONFIG_INI_PATH.exists():
+        log_message(f"INFO: Configuration file {CONFIG_INI_PATH} not found.")
+        return False
+    
     # Parse INI file
     config = configparser.ConfigParser()
-    config.read(config_ini_path)
+    config.read(CONFIG_INI_PATH)
 
     if "Wireless" not in config:
-        log_message(f"ERROR: 'Wireless' section not found in {config_ini_path}.")
-        # Unlink config file
+        log_message(f"ERROR: 'Wireless' section not found in {CONFIG_INI_PATH}.")
         unlink_config_file_ini()
         return False
     
-    # Get PrimaryDNS, SecondaryDNS, PrimwaryWINS and SecondaryWINS values
-    primary_dns = config.get("Wireless", "PrimaryDNS")
-    secondary_dns = config.get("Wireless", "SecondaryDNS")
-    primary_wins = config.get("Wireless", "PrimaryWINS")
-    secondary_wins = config.get("Wireless", "SecondaryWINS")
+    """
+        Get the below information:
+        ssid, password, ip, subnet_mask, gateway, primary_dns, secondary_dns
+    """
+    ssid = config.get("Wireless", "ssid")
+    password = config.get("Wireless", "password")
+    ip = config.get("Wireless", "IP")
+    subnet_mask = config.get("Wireless", "SubnetMask")
+    gateway = config.get("Wireless", "Gateway", fallback="NA")
+    primary_dns = config.get("Wireless", "PrimaryDNS", fallback="NA")
+    secondary_dns = config.get("Wireless", "SecondaryDNS", fallback="NA")
+    primary_wins = config.get("Wireless", "PrimaryWINS", fallback="NA")
+    secondary_wins = config.get("Wireless", "SecondaryWINS", fallback="NA")
 
-    # Create STATIC netplan yaml
-    try:
-        # Create STATIC netplan yaml
-        static_netplan_config.touch()
-        static_netplan_config.chmod(0o600)
-        log_message(f"INFO: Created blank {static_netplan_config}.")
-    except Exception as e:
-        log_message(f"ERROR: Failed to create {static_netplan_config} - {e}")
-        # Unlink config file
-        unlink_config_file_ini()
-        return False
-    
-    # Create STATIC netplan yaml content
-    static_yaml_content = {
-        "network": {
-            "version": 2,
-            "renderer": "NetworkManager",
-            "wifis": {
-                interface: {
-                    "dhcp4": False,
-                    "optional": True,
-                    "access-points": {
-                        config.get("Wireless", "ssid"): {
-                            "password": config.get("Wireless", "password")
-                        }
-                    },
-                    "addresses": [ f'{config.get("Wireless", "IP")}/{subnet_mask_to_cidr(config.get("Wireless", "SubnetMask"))}' ],
-                    "routes": [{
-                        "to": "default",
-                        "via": config.get("Wireless", "Gateway")
-                    }],
-                    
+    if not static_netplan_config.exists():
+        # Create new static YAML if does not exist
+        try:
+            static_netplan_config.touch()
+            static_netplan_config.chmod(0o600)
+            log_message(f"INFO: Created blank {static_netplan_config}.")
+        except Exception as e:
+            log_message(f"ERROR: Failed to create {static_netplan_config} - {e}")
+            unlink_config_file_ini()
+            return False
+        
+        static_yaml_content = {
+            "network": {
+                "version": 2,
+                "renderer": "NetworkManager",
+                "wifis": {
+                    interface: {
+                        "dhcp4": False,
+                        "optional": True,
+                        "access-points": {
+                            ssid: {
+                                "password": password
+                            }
+                        },
+                        "addresses": [f"{ip}/{subnet_mask_to_cidr(subnet_mask)}"],
+                        "routes": [{"to": "default", "via": gateway}]
+                    }
                 }
             }
         }
-    }
-    nameservers = []
-    if primary_dns != 'NA':
-        nameservers.append(primary_dns)
-    if secondary_dns != 'NA':
-        nameservers.append(secondary_dns)
-    if nameservers:
-        static_yaml_content["network"]["wifis"][interface]["nameservers"] = {"addresses": nameservers}
-        
-    # Write STATIC netplan yaml content
-    with static_netplan_config.open("w") as f:
-        yaml.dump(static_yaml_content, f, default_flow_style=False)
-        log_message(f"INFO: Wrote STATIC netplan YAML to {static_netplan_config}.")
+        nameservers = []
+        if primary_dns != "NA":
+            nameservers.append(primary_dns)
+        if secondary_dns != "NA":
+            nameservers.append(secondary_dns)
+        if nameservers:
+            static_yaml_content["network"]["wifis"][interface]["nameservers"] = {"addresses": nameservers}
 
-    # Apply NETPLAN
+        with static_netplan_config.open("w") as f:
+            yaml.dump(static_yaml_content, f, default_flow_style=False)
+            log_message(f"INFO: Wrote static netplan YAML to {static_netplan_config}.")
+    else:
+        # YAML exists; check and update access-points
+        log_message(f"INFO: {static_netplan_config} already exists, checking SSID.")
+        with static_netplan_config.open("r") as f:
+            static_yaml_content = yaml.safe_load(f)
+        if "network" not in static_yaml_content or "wifis" not in static_yaml_content["network"] or interface not in static_yaml_content["network"]["wifis"]:
+            log_message(f"ERROR: Invalid YAML structure in {static_netplan_config}.")
+            unlink_config_file_ini()
+            return False
+        # Get the Access-Points
+        access_points = static_yaml_content["network"]["wifis"][interface].get("access-points", {})
+
+        if ssid not in access_points:
+            # Add new SSID if not present
+            access_points[ssid] = {"password": password}
+            log_message(f"INFO: Added new SSID {ssid} to access-points in {static_netplan_config}.")
+            # Write the updated YAML
+            with static_netplan_config.open("w") as f:
+                yaml.dump(static_yaml_content, f, default_flow_style=False)
+                log_message(f"INFO: Updated static netplan YAML in {static_netplan_config}.")
+        else:
+            # SSID exists; update password if different
+            if access_points[ssid].get("password") != password:
+                access_points[ssid]["password"] = password
+                log_message(f"INFO: Updated password for SSID {ssid} in {static_netplan_config}.")
+                # Write the updated YAML
+                with static_netplan_config.open("w") as f:
+                    yaml.dump(static_yaml_content, f, default_flow_style=False)
+                    log_message(f"INFO: Updated static netplan YAML in {static_netplan_config}.")
+            else:
+                log_message(f"INFO: SSID {ssid} and password already exist in {static_netplan_config}.")
+    
     if not apply_netplan():
         return False
     return True
+
+def manage_access_point(interface, ssid, action):
+    """Enable or disable a specific access point in the Netplan configuration."""
+    dhcp_netplan_config = CONFIG_DIR / f"100-netmancer-{interface}-dhcp.yaml"
+    static_netplan_config = CONFIG_DIR / f"100-netmancer-{interface}-static.yaml"
+    config_file = None
+
+    # Determine which config file to modify (DHCP or Static)
+    if dhcp_netplan_config.exists():
+        config_file = dhcp_netplan_config
+    elif static_netplan_config.exists():
+        config_file = static_netplan_config
+    else:
+        log_message(f"ERROR: No DHCP or Static configuration found for {interface}.")
+        return False
+    
+    # Load the YAML content
+    with open(config_file, 'r') as f:
+        config = yaml.safe_load(f)
+    
+    wifis = config.get('network', {}).get('wifis', {})
+
+    for interface, settinfs in wifis.items():
+        access_points = settinfs.get('access-points', {})
+
+        for existing_ssid in list(access_points.keys()):
+            if existing_ssid.lstrip("#") == ssid:
+                ssid_key = existing_ssid.lstrip("#")
+                ap_data = access_points.pop(existing_ssid)
+
+                if action == "disable":
+                    updated_ssid = f"# {ssid_key}"
+                    if "password" in ap_data:
+                        ap_data["# password"] = ap_data.pop("password")
+                elif action == "enable":
+                    updated_ssid = ssid_key
+                    if "# password" in ap_data:
+                        ap_data["password"] = ap_data.pop("# password")
+                else:
+                    log_message(f"ERROR: Invalid action '{action}' for SSID '{ssid}'.")
+                    return False
+                access_points[updated_ssid] = ap_data
+            
+    # Write the updated YAML content
+    with open(config_file, 'w') as f:
+        yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+
+    # Apply the updated configuration
+    if not apply_netplan():
+        return False
+    return True
+
+    
 
 def apply_netplan():
     """Apply NETPLAN YAML"""
@@ -295,15 +405,13 @@ def apply_netplan():
         return False
 
 def unlink_config_file_ini():
-    """Unlink the /tmp/wireless.ini file."""
     config_file_ini = Path("/tmp/wireless.ini")
-    if config_file_ini.exists():
-        try:
-            config_file_ini.unlink()
-            log_message(f"INFO: Unlinked {config_file_ini}.")
-        except Exception as e:
-            log_message(f"ERROR: Failed to unlink {config_file_ini} - {e}")
-            return False
+    try:
+        config_file_ini.unlink(missing_ok=True)
+        log_message(f"INFO: Unlinked {config_file_ini}.")
+    except Exception as e:
+        log_message(f"ERROR: Failed to unlink {config_file_ini} - {e}")
+        return False
     return True
 
 

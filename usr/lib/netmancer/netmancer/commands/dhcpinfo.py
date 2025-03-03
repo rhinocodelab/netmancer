@@ -81,7 +81,7 @@ def get_interface_details(interface):
                     dhcp_details["subnet_mask"] = value
         # Get hostname
         dhcp_details["host_name"] = get_system_hostname()
-        log_message(f"INFO: Retrieved DHCP server details for {interface}: {dhcp_details}")
+        log_message(f"INFO: Retrieved DHCP server details for {interface}")
         return dhcp_details
 
     except subprocess.CalledProcessError as e:
